@@ -196,33 +196,14 @@ UARTStatusTx uart_tx_status[UART_Num_Interfaces];
 
 // -- Ring Buffer Convenience Functions --
 
-void Connect_addBytes( uint8_t *buffer, uint8_t count, uint8_t uart )
+// Add as many bytes to the UART buffer as currently fit, return number
+// of bytes copied.
+static uint8_t do_addBytes( uint8_t *buffer, uint8_t count, uint8_t uart )
 {
-	// Too big to fit into buffer
-	if ( count > UART_Buffer_Size )
-	{
-		erro_msg("Too big of a command to fit into the buffer...");
-		return;
-	}
+	uint8_t available = UART_Buffer_Size - uart_tx_buf [ uart ].items;
+	uint8_t total = count > available ? available : count;
 
-	// Invalid UART
-	if ( uart >= UART_Num_Interfaces )
-	{
-		erro_print("Invalid UART to send from...");
-		return;
-	}
-
-	// Delay UART copy until there's some space left
-	while ( uart_tx_buf[ uart ].items + count > UART_Buffer_Size )
-	{
-		warn_msg("Too much data to send on UART");
-		printInt8( uart );
-		print( ", waiting..." NL );
-		delay( 1 );
-	}
-
-	// Append data to ring buffer
-	for ( uint8_t c = 0; c < count; c++ )
+	for ( uint8_t c = 0; c < total; c++ )
 	{
 		if ( Connect_debug )
 		{
@@ -240,6 +221,60 @@ void Connect_addBytes( uint8_t *buffer, uint8_t count, uint8_t uart )
 			uart_tx_buf[ uart ].head++;
 		if ( uart_tx_buf[ uart ].head >= UART_Buffer_Size )
 			uart_tx_buf[ uart ].head = 0;
+	}
+
+	return total;
+}
+
+void Connect_addBytes( uint8_t *buffer, uint8_t count, uint8_t uart )
+{
+	// Too big to fit into buffer
+	// FIXME: Should this just queue?
+	if ( count > UART_Buffer_Size )
+	{
+		erro_msg("Too big of a command to fit into the buffer...");
+		return;
+	}
+
+	// Invalid UART
+	if ( uart >= UART_Num_Interfaces )
+	{
+		erro_print("Invalid UART to send from...");
+		return;
+	}
+
+	// Append as much data as we can to the ring buffer
+	count -= do_addBytes( buffer, count, uart );
+
+	// If there's data remaining, flush whatever is possible to the
+	// UART and then wait for it to drain.
+	while ( count )
+	{
+		switch ( uart ) {
+		case 0:
+			uart_fillTxFifo( 0 );
+			break;
+		case 1:
+			uart_fillTxFifo( 1 );
+			break;
+		default:
+			// FIXME: Cannot happen; assert this
+			break;
+		}
+		count -= do_addBytes( buffer, count, uart );
+		if ( count == 0 )
+			break;
+
+		// At this point we have to wait for the hardware device
+		// to drain its FIFO before we can write the remaining data.
+		warn_msg("Too much data to send on UART");
+		printInt8( uart );
+		print( ", waiting..." NL );
+
+		// At 4.5 Mbps, it should take about 25 us to drain the FIFO.
+		// For slower serial rates this should probably be larger, and
+		// some sort of latency mitigation might be required.
+		delayMicroseconds( 10 );
 	}
 }
 
